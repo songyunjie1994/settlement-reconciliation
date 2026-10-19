@@ -4,6 +4,9 @@ create table if not exists public.settlement_collector_keys(token_hash text prim
 create table if not exists public.settlement_rows(
  row_key text primary key,platform text not null check(platform in ('kuaishou','douyin')),shop text not null,order_id text not null,product_id text not null,order_month text not null,created_at text not null,creator_nickname text not null,creator_id text not null,creator_account text not null,agency_nickname text not null,closed boolean not null,paid_cents bigint,settled_cents bigint,commission_cents bigint,service_fee_cents bigint,captured_at timestamptz not null,payload jsonb not null);
 create index if not exists settlement_filter on public.settlement_rows(platform,shop,order_month);
+create index if not exists settlement_readback on public.settlement_rows(platform,shop,captured_at);
+create index if not exists settlement_page_order on public.settlement_rows(created_at desc,row_key);
+create index if not exists settlement_month_read on public.settlement_rows(order_month,platform,shop) include(row_key,created_at,closed,paid_cents,settled_cents,commission_cents,service_fee_cents,creator_nickname,creator_id,creator_account,agency_nickname,order_id);
 create index if not exists settlement_open_month on public.settlement_rows(closed,order_month);
 create table if not exists public.settlement_runs(run_id text primary key,started_at timestamptz not null,updated_at timestamptz not null,status text not null,start_date text not null,end_date text not null,expected_jobs int not null,completed_jobs int not null,record_count int not null,details jsonb not null);
 create table if not exists public.settlement_batches(batch_id text primary key,digest text not null,record_count int not null,imported_at timestamptz not null default now());
@@ -20,13 +23,13 @@ declare result jsonb;
 begin
  if auth.uid() is null or not exists(select 1 from public.settlement_members where user_id=auth.uid()) then raise insufficient_privilege using message='没有结算系统权限'; end if;
  if p_page<1 or p_page>100000 or length(p_q)>200 then raise exception '筛选条件无效';end if;
- with filtered as materialized (select * from public.settlement_rows r where (p_platform='' or platform=p_platform) and(p_shop='' or shop=p_shop)and(p_month='' or order_month=p_month)and(not p_open or not closed)and(p_q='' or creator_nickname ilike '%'||p_q||'%' or creator_id ilike '%'||p_q||'%' or creator_account ilike '%'||p_q||'%' or agency_nickname ilike '%'||p_q||'%' or order_id=p_q)),
+ with filtered as materialized (select row_key,platform,shop,order_month,created_at,closed,paid_cents,settled_cents,commission_cents,service_fee_cents from public.settlement_rows r where (p_platform='' or platform=p_platform) and(p_shop='' or shop=p_shop)and(p_month='' or order_month=p_month)and(not p_open or not closed)and(p_q='' or creator_nickname ilike '%'||p_q||'%' or creator_id ilike '%'||p_q||'%' or creator_account ilike '%'||p_q||'%' or agency_nickname ilike '%'||p_q||'%' or order_id=p_q)),
  summary as(select jsonb_build_object('records',count(*),'shops',count(distinct shop),'open',count(*) filter(where not closed),'paidCents',sum(paid_cents),'settledCents',sum(settled_cents),'commissionCents',sum(commission_cents),'serviceFeeCents',sum(service_fee_cents)) v from filtered),
- page_rows as(select payload||jsonb_build_object('capturedAt',captured_at) v from filtered order by created_at desc,row_key limit 50 offset(p_page-1)*50),
+ page_rows as(select d.payload||jsonb_build_object('capturedAt',d.captured_at) v,f.created_at,f.row_key from(select row_key,created_at from filtered order by created_at desc,row_key limit 50 offset(p_page-1)*50)f join public.settlement_rows d on d.row_key=f.row_key),
  options as(select distinct platform,shop,order_month from public.settlement_rows),
  cohorts as(select platform,order_month,count(*) records,count(*) filter(where not closed) open,sum(settled_cents) "settledCents" from filtered group by platform,order_month order by order_month desc,platform),
  runs as(select * from public.settlement_runs order by updated_at desc limit 12)
- select jsonb_build_object('summary',(select v from summary),'rows',coalesce((select jsonb_agg(v)from page_rows),'[]'::jsonb),'options',coalesce((select jsonb_agg(to_jsonb(o) order by shop,order_month desc)from options o),'[]'::jsonb),'cohorts',coalesce((select jsonb_agg(to_jsonb(c))from cohorts c),'[]'::jsonb),'runs',coalesce((select jsonb_agg(to_jsonb(r))from runs r),'[]'::jsonb),'page',p_page,'pageSize',50) into result;
+ select jsonb_build_object('summary',(select v from summary),'rows',coalesce((select jsonb_agg(v order by created_at desc,row_key)from page_rows),'[]'::jsonb),'options',coalesce((select jsonb_agg(to_jsonb(o) order by shop,order_month desc)from options o),'[]'::jsonb),'cohorts',coalesce((select jsonb_agg(to_jsonb(c))from cohorts c),'[]'::jsonb),'runs',coalesce((select jsonb_agg(to_jsonb(r))from runs r),'[]'::jsonb),'page',p_page,'pageSize',50) into result;
  return result;
 end;$$;
 revoke all on function public.settlement_dashboard(text,text,text,boolean,text,integer) from public,anon;
