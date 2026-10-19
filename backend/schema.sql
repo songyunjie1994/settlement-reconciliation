@@ -8,6 +8,7 @@ create index if not exists settlement_readback on public.settlement_rows(platfor
 create index if not exists settlement_page_order on public.settlement_rows(created_at desc,row_key);
 create index if not exists settlement_month_read on public.settlement_rows(order_month,platform,shop) include(row_key,created_at,closed,paid_cents,settled_cents,commission_cents,service_fee_cents,creator_nickname,creator_id,creator_account,agency_nickname,order_id);
 create index if not exists settlement_open_month on public.settlement_rows(closed,order_month);
+create index if not exists settlement_tracking_open_key on public.settlement_rows(row_key) where not closed;
 create table if not exists public.settlement_runs(run_id text primary key,started_at timestamptz not null,updated_at timestamptz not null,status text not null,start_date text not null,end_date text not null,expected_jobs int not null,completed_jobs int not null,record_count int not null,details jsonb not null);
 create table if not exists public.settlement_batches(batch_id text primary key,digest text not null,record_count int not null,imported_at timestamptz not null default now());
 alter table public.settlement_members enable row level security;
@@ -40,6 +41,10 @@ language plpgsql security definer set search_path=pg_catalog,public,extensions a
 declare r jsonb;key text;sha text;previous public.settlement_batches;cnt integer;field text;
 begin
  if not exists(select 1 from public.settlement_collector_keys where enabled and token_hash=encode(extensions.digest(p_token,'sha256'),'hex')) then raise insufficient_privilege using message='采集机凭据无效';end if;
+ if p_body->>'kind'='tracking' then
+ if length(coalesce(p_body->>'cursor',''))>600 then raise exception '游标无效';end if;
+ return(select jsonb_build_object('rows',coalesce(jsonb_agg(payload||jsonb_build_object('capturedAt',captured_at) order by row_key),'[]'::jsonb),'nextCursor',case when count(*)=200 then max(row_key) else null end)from(select row_key,payload,captured_at from public.settlement_rows where not closed and row_key>coalesce(p_body->>'cursor','') order by row_key limit 200)t);
+ end if;
  if p_body is null or p_body->>'kind'='readback' then
  return jsonb_build_object('platforms',coalesce((select jsonb_agg(x) from (select platform,count(*) records,count(distinct shop) shops,max(captured_at) "lastCapturedAt" from public.settlement_rows group by platform)x),'[]'::jsonb),'batches',(select jsonb_build_object('batches',count(*),'importedRows',sum(record_count))from public.settlement_batches));end if;
  if p_body->>'kind'='run' then
