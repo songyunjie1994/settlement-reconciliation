@@ -8,6 +8,14 @@ GitHub Pages 托管页面，Supabase 保存订单、结算明细和采集记录�
 
 Node.js 22.13+，执行 `npm ci`、`npm run check`、`npm run build`。推送 main 后 GitHub Actions 发布 dist。
 
+## Excel 导出
+
+登录后在「达人结算明细」筛选区域点击「导出 Excel」。导出应用当前已生效的平台、店铺、归属月份、完结状态和搜索条件，包含全部匹配记录，不受 50 条分页限制。文件包含「导出说明」与「结算明细」两张表；订单号、商品及达人 ID 按文本保留，金额单位为元，缺失留空、实际零金额保留 0.00。
+
+使用与页面相同的成员权限，通过 `backend/export.sql` 创建导出 RPC（初次部署先应用 `backend/schema.sql`，再应用该文件）。每批 1,000 条，以稳定主键游标遍历；导出前后核验记录数和来源内容指纹。期间数据变化则提示重试，避免生成缺行或混合版本的文件。Excel 在浏览器 Worker 内分批压缩，不向其他服务发送订单内容，可随时取消。超过 Excel 单表行数上限时需缩小筛选范围。
+
+执行 `npm test` 验证 Excel 标识符、金额、空值、文本安全及跨批写入。
+
 ## 数据库
 
 `backend/schema.sql` 仅定义本系统表和 RPC，不修改其他业务表。部署时通过管理通道添加 `settlement_members` 成员和 `settlement_collector_keys` 哈希。所有表启用 RLS，匿名和普通用户不能直接读取表；查询 RPC 校验登录用户及成员资格。采集入口使用独立随机凭据，仅授予本系统回传和数量核验能力，数据库只保存 SHA-256。采集机在当前 Windows 用户 DPAPI 下保存凭据。
